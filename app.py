@@ -55,8 +55,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Sidebar Configuration for API Key input if not detected automatically
-st.sidebar.title("🛡️ Configuration")
+# Sidebar Configuration
+st.sidebar.title("🛡️ Aegis Financial")
+
 if not groq_api_key:
     groq_api_key = st.sidebar.text_input(
         "Enter Groq API Key:", 
@@ -64,8 +65,15 @@ if not groq_api_key:
         help="Get your key at https://console.groq.com/"
     )
 
-if groq_api_key:
-    os.environ["GROQ_API_KEY"] = groq_api_key
+st.sidebar.markdown("---")
+st.sidebar.subheader("System Information")
+st.sidebar.caption("🟢 **Inference:** Groq LLaMA 3.3 70B")
+st.sidebar.caption("🟢 **Database:** ChromaDB Vector Store")
+st.sidebar.caption("🟢 **Compliance:** Zero-Hallucination Grounded")
+
+st.sidebar.markdown("---")
+st.sidebar.caption("© 2026 Aegis Financial. All Rights Reserved.")
+st.sidebar.caption("Institutional Due Diligence Platform.")
 
 # ==========================================
 # 2. PYDANTIC OUTPUT SCHEMAS
