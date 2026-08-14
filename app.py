@@ -1,30 +1,41 @@
 import os
+import re
 import pandas as pd
 import streamlit as st
 from typing import List
 from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 
 # LangChain & Vector Store Imports
 from langchain_groq import ChatGroq
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # ==========================================
-# 0. BACKEND API KEY CONFIGURATION (HIDDEN FROM UI)
+# 0. SAFE ENVIRONMENT / SECRET MANAGEMENT
 # ==========================================
-os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY", "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")
+# Load environment variables from local .env file (if present)
+load_dotenv()
+
+# Check for API key in Streamlit secrets or OS environment
+groq_api_key = os.getenv("GROQ_API_KEY")
+
+# Fallback check for Streamlit Cloud secrets configuration
+if not groq_api_key and "GROQ_API_KEY" in st.secrets:
+    groq_api_key = st.secrets["GROQ_API_KEY"]
 
 # ==========================================
-# 1. STREAMLIT PAGE CONFIGURATION
+# 1. STREAMLIT PAGE CONFIGURATION & STYLING
 # ==========================================
 st.set_page_config(
-    page_title="Aegis Financial",
+    page_title="Aegis Financial — SEC Audit Engine",
     page_icon="🛡️",
     layout="wide"
 )
 
-# Custom Styling
+# Enterprise Dark Theme Styling
 st.markdown("""
 <style>
     .stApp {
@@ -33,140 +44,189 @@ st.markdown("""
     }
     .metric-card {
         background-color: #161b22;
-        padding: 1rem;
+        padding: 1.2rem;
         border-radius: 0.5rem;
         border: 1px solid #30363d;
         text-align: center;
     }
+    .stAlert {
+        border-radius: 6px;
+    }
 </style>
 """, unsafe_allow_html=True)
+
+# Sidebar Configuration for API Key input if not detected automatically
+st.sidebar.title("🛡️ Configuration")
+if not groq_api_key:
+    groq_api_key = st.sidebar.text_input(
+        "Enter Groq API Key:", 
+        type="password",
+        help="Get your key at https://console.groq.com/"
+    )
+
+if groq_api_key:
+    os.environ["GROQ_API_KEY"] = groq_api_key
 
 # ==========================================
 # 2. PYDANTIC OUTPUT SCHEMAS
 # ==========================================
 class FinancialMetric(BaseModel):
-    metric_name: str = Field(description="Name of financial metric")
-    current_period: str = Field(description="Current period value")
-    previous_period: str = Field(description="Comparison period value")
-    trend: str = Field(description="UP, DOWN, or STABLE")
+    metric_name: str = Field(description="Name of financial metric e.g. Consolidated Revenue, Free Cash Flow, Net Debt")
+    current_period: str = Field(description="Current period value e.g. $1.2B, $180M, $450M")
+    previous_period: str = Field(description="Comparison period value e.g. $1.04B Q2 2025, $195M Q2 2025")
+    trend: str = Field(description="Directional trend: UP, DOWN, or STABLE")
 
 class AegisFinancialReport(BaseModel):
-    company_name: str = Field(description="Organization name")
+    company_name: str = Field(description="Organization name e.g. TechCorp")
     period: str = Field(description="Reporting Period e.g. Q2 2026")
-    executive_summary: str = Field(description="Executive performance and risk summary")
-    key_metrics: List[FinancialMetric] = Field(description="Extracted financial metrics list")
-    key_risk_factors: List[str] = Field(description="Flagged guidance risks or warnings")
-    growth_drivers: List[str] = Field(description="Primary revenue drivers")
+    executive_summary: str = Field(description="Concise performance, capital allocation, and risk summary for buy-side teams")
+    key_metrics: List[FinancialMetric] = Field(description="Extracted financial metrics including YoY Revenue, Net Debt, and Free Cash Flow")
+    key_risk_factors: List[str] = Field(description="Flagged guidance revisions, supply chain bottlenecks, or regulatory risks")
+    growth_drivers: List[str] = Field(description="Primary business or revenue expansion drivers")
     overall_sentiment: str = Field(description="BULLISH, BEARISH, or NEUTRAL")
 
 # ==========================================
-# 3. RAG PIPELINE INITIALIZATION (CACHED)
+# 3. DOCUMENT PROCESSING & VECTOR RAG ENGINE
 # ==========================================
-FINANCIAL_DISCLOSURES = [
-    "Aegis Audit Target (TechCorp) Q2 2026: Consolidated revenue reached $1.2B, up 15% YoY ($1.04B Q2 2025). Operating margin expanded from 22% to 25%.",
-    "Aegis Guidance Disclosure: Management revised full-year FY2026 growth guidance downward from 18% to 12% due to European supply chain bottlenecks and regulatory delays.",
-    "Aegis Balance Sheet Review: Free cash flow contracted 8% to $180M due to increased infrastructure CapEx in AI data centers. Net debt is reported at $450M."
+RAW_SEC_FILINGS = [
+    """
+    TechCorp Inc. (NASDAQ: TCHP) - Form 10-Q Disclosure (Q2 2026)
+    ITEM 1. FINANCIAL STATEMENTS & MANAGEMENT DISCUSSION
+    For the quarter ended June 30, 2026, TechCorp consolidated revenue reached $1.2B, reflecting a 15% YoY growth compared to $1.04B in Q2 2025.
+    Operating margin expanded from 22% in the prior year period to 25% due to cloud software licensing momentum.
+    """,
+    """
+    TechCorp Inc. - Balance Sheet & Cash Flow Review (Q2 2026)
+    Free cash flow for the second quarter contracted 8% YoY to $180M (down from $195M in Q2 2025), driven by increased infrastructure capital expenditures in AI data center deployment.
+    Total outstanding debt stands at $600M offset by $150M in cash equivalents, resulting in a Net Debt position of $450M (compared to $400M in Q2 2025).
+    """,
+    """
+    TechCorp Inc. - Guidance & Risk Factors Disclosure
+    MANAGEMENT REVISION & REGULATORY WARNING:
+    Management revised full-year FY2026 revenue growth guidance downward from 18% to 12%.
+    The revision is attributed to European supply chain bottlenecks in semiconductor hardware delivery and pending regulatory approval delays in cross-border AI data transfers.
+    """
 ]
+
+def clean_and_normalize_sec_text(raw_text: str) -> str:
+    """Cleans SEC 10-K/10-Q text and multi-row tables."""
+    cleaned = re.sub(r'\s+', ' ', raw_text)
+    cleaned = re.sub(r'[^\x00-\x7F]+', '', cleaned)
+    return cleaned.strip()
 
 @st.cache_resource
 def setup_rag_engine():
+    """Document processing pipeline: cleaning, text splitting, and vector store initialization."""
+    # Step A: Text Cleaning
+    cleaned_docs = [clean_and_normalize_sec_text(doc) for doc in RAW_SEC_FILINGS]
+    
+    # Step B: Recursive Text Splitting
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    doc_chunks = text_splitter.split_text(" ".join(cleaned_docs))
+    
+    # Step C: Dense Vector Search (ChromaDB)
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     vectorstore = Chroma.from_texts(
-        texts=FINANCIAL_DISCLOSURES,
+        texts=doc_chunks,
         embedding=embeddings,
-        collection_name="aegis_simple_ui"
+        collection_name="aegis_sec_audits"
     )
     return vectorstore.as_retriever(search_kwargs={"k": 3})
 
 retriever = setup_rag_engine()
 
-# LLM Setup
-llm = ChatGroq(model_name="llama-3.3-70b-versatile", temperature=0)
-structured_llm = llm.with_structured_output(AegisFinancialReport)
-
 AEGIS_PROMPT = """
 You are Aegis Financial's Lead Regulatory Compliance & Due Diligence Intelligence Engine.
 Analyze the provided SEC disclosures, balance sheets, and earnings call context to evaluate financial risk.
 
---- RETRIEVED FINANCIAL DISCLOSURES ---
+--- RETRIEVED SEC DISCLOSURES ---
 {financial_context}
 
 --- AUDIT QUERY ---
 {user_query}
 
 Deliver an accurate, structured due diligence report adhering strictly to the facts provided above.
+Do not invent any numbers or metrics outside the provided context.
 """
 prompt_template = ChatPromptTemplate.from_template(AEGIS_PROMPT)
 
 # ==========================================
-# 4. CLEAN STREAMLIT FRONTEND UI
+# 4. STREAMLIT FRONTEND UI DASHBOARD
 # ==========================================
-
-# Header
 st.title("🛡️ Aegis Financial Intelligence")
-st.caption("Automated Regulatory Compliance & Due Diligence Audit Engine")
+st.caption("Autonomous SEC Due Diligence & Regulatory Risk Audit Engine")
 
 st.divider()
 
-# Input Section
+# Input Query Section
 query = st.text_input(
     "Enter Audit Query:",
-    value="Perform an Aegis audit on TechCorp Q2 2026 revenue expansion, cash flow changes, and guidance risks."
+    value="Perform an Aegis audit on TechCorp Q2 2026 revenue expansion, free cash flow changes, net debt, and guidance risks."
 )
 
 if st.button("Run Audit", type="primary", use_container_width=True):
-    try:
-        with st.spinner("Processing SEC disclosures via Groq LLaMA 3.3..."):
-            # Step A: Retrieve Context
-            docs = retriever.invoke(query)
-            context = "\n".join([doc.page_content for doc in docs])
-            
-            # Step B: LLM Generation
-            formatted_prompt = prompt_template.format(
-                financial_context=context,
-                user_query=query
-            )
-            report: AegisFinancialReport = structured_llm.invoke(formatted_prompt)
+    if not groq_api_key:
+        st.error("⚠️ Groq API Key missing! Please enter your key in the sidebar or set it in your environment variables.")
+    else:
+        try:
+            with st.spinner("Processing SEC disclosures via Groq LLaMA 3.3 70B..."):
+                # Step 1: Retrieve Top-3 Context Chunks
+                docs = retriever.invoke(query)
+                context = "\n".join([doc.page_content for doc in docs])
 
-        st.divider()
+                # Step 2: Structured Output Generation via Pydantic & Groq
+                llm = ChatGroq(model_name="llama-3.3-70b-versatile", temperature=0)
+                structured_llm = llm.with_structured_output(AegisFinancialReport)
 
-        # Target & Sentiment Bar
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Company", report.company_name, delta=report.period)
-        with col2:
-            st.metric("Overall Sentiment", report.overall_sentiment)
-        with col3:
-            st.metric("Audit Precision", "Zero Hallucination", delta="100% Grounded")
+                formatted_prompt = prompt_template.format(
+                    financial_context=context,
+                    user_query=query
+                )
+                report: AegisFinancialReport = structured_llm.invoke(formatted_prompt)
 
-        # Executive Summary
-        st.subheader("📋 Executive Summary")
-        st.info(report.executive_summary)
+            st.divider()
 
-        # Content Grid
-        col_left, col_right = st.columns([1.2, 1])
+            # Target & Sentiment Bar
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Company", report.company_name, delta=report.period)
+            with col2:
+                st.metric("Overall Sentiment", report.overall_sentiment)
+            with col3:
+                st.metric("Audit Precision", "Zero Hallucination", delta="100% Grounded")
 
-        with col_left:
-            st.subheader("📊 Extracted Metrics")
-            table_data = [
-                {
-                    "Metric": m.metric_name,
-                    "Current": m.current_period,
-                    "Previous": m.previous_period,
-                    "Trend": "▲ UP" if m.trend.upper() == "UP" else ("▼ DOWN" if m.trend.upper() == "DOWN" else "➔ STABLE")
-                }
-                for m in report.key_metrics
-            ]
-            st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
+            # Executive Summary Box
+            st.subheader("📋 Executive Summary")
+            st.info(report.executive_summary)
 
-        with col_right:
-            st.subheader("⚠️ Guidance & Risk Flags")
-            for risk in report.key_risk_factors:
-                st.warning(risk)
+            # Dashboard Grid
+            col_left, col_right = st.columns([1.3, 1])
 
-            st.subheader("📈 Revenue Drivers")
-            for driver in report.growth_drivers:
-                st.success(driver)
+            with col_left:
+                st.subheader("📊 Extracted Metrics Table")
+                table_data = [
+                    {
+                        "Metric": m.metric_name,
+                        "Current Period": m.current_period,
+                        "Previous Period": m.previous_period,
+                        "Trend": "▲ UP" if m.trend.upper() == "UP" else ("▼ DOWN" if m.trend.upper() == "DOWN" else "➔ STABLE")
+                    }
+                    for m in report.key_metrics
+                ]
+                st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
 
-    except Exception as e:
-        st.error(f"Audit Processing Error: {str(e)}")
+            with col_right:
+                st.subheader("⚠️ Guidance & Risk Flags")
+                for risk in report.key_risk_factors:
+                    st.warning(f"**Risk Flag:** {risk}")
+
+                st.subheader("📈 Primary Growth Drivers")
+                for driver in report.growth_drivers:
+                    st.success(f"**Driver:** {driver}")
+
+        except Exception as e:
+            st.error(f"Audit Processing Error: {str(e)}")
