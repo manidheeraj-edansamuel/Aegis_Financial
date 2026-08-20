@@ -16,15 +16,14 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # ==========================================
 # 0. SAFE ENVIRONMENT / SECRET MANAGEMENT
 # ==========================================
-# Load environment variables from local .env file (if present)
 load_dotenv()
 
-# Check for API key in Streamlit secrets or OS environment
-groq_api_key = os.getenv("GROQ_API_KEY")
+# Check for API key in OS environment or Streamlit secrets
+groq_api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 
-# Fallback check for Streamlit Cloud secrets configuration
-if not groq_api_key and "GROQ_API_KEY" in st.secrets:
-    groq_api_key = st.secrets["GROQ_API_KEY"]
+# Sync key back to OS environment so LangChain tools detect it globally
+if groq_api_key:
+    os.environ["GROQ_API_KEY"] = groq_api_key
 
 # ==========================================
 # 1. STREAMLIT PAGE CONFIGURATION & STYLING
@@ -187,7 +186,11 @@ if st.button("Run Audit", type="primary", use_container_width=True):
                 context = "\n".join([doc.page_content for doc in docs])
 
                 # Step 2: Structured Output Generation via Pydantic & Groq
-                llm = ChatGroq(model_name="llama-3.3-70b-versatile", temperature=0)
+                llm = ChatGroq(
+    groq_api_key=groq_api_key,
+    model="llama-3.3-70b-versatile",
+    temperature=0
+)
                 structured_llm = llm.with_structured_output(AegisFinancialReport)
 
                 formatted_prompt = prompt_template.format(
