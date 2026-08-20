@@ -24,10 +24,10 @@ if "OPENAI_API_KEY" in os.environ:
 if "OPENAI_BASE_URL" in os.environ:
     del os.environ["OPENAI_BASE_URL"]
 
-# Check for API key in OS environment or Streamlit secrets
+# Check for API key in Streamlit secrets or OS environment
 groq_api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 
-# Sync key to OS environment
+# Sync key back to OS environment
 if groq_api_key:
     os.environ["GROQ_API_KEY"] = groq_api_key
 
@@ -69,6 +69,8 @@ if not groq_api_key:
         type="password",
         help="Get your key at https://console.groq.com/"
     )
+    if groq_api_key:
+        os.environ["GROQ_API_KEY"] = groq_api_key
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("System Information")
@@ -130,10 +132,8 @@ def clean_and_normalize_sec_text(raw_text: str) -> str:
 @st.cache_resource
 def setup_rag_engine():
     """Document processing pipeline: cleaning, text splitting, and vector store initialization."""
-    # Step A: Text Cleaning
     cleaned_docs = [clean_and_normalize_sec_text(doc) for doc in RAW_SEC_FILINGS]
     
-    # Step B: Recursive Text Splitting
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200,
@@ -141,7 +141,6 @@ def setup_rag_engine():
     )
     doc_chunks = text_splitter.split_text(" ".join(cleaned_docs))
     
-    # Step C: Dense Vector Search (ChromaDB)
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     vectorstore = Chroma.from_texts(
         texts=doc_chunks,
@@ -193,12 +192,12 @@ if st.button("Run Audit", type="primary", use_container_width=True):
 
                 # Step 2: Structured Output Generation via Pydantic & Groq
                 llm = ChatGroq(
-    groq_api_key=groq_api_key,
-    model_name="llama-3.3-70b-versatile",
-    groq_api_base="https://api.groq.com/openai/v1",
-    temperature=0
-)
-structured_llm = llm.with_structured_output(AegisFinancialReport)
+                    groq_api_key=groq_api_key,
+                    model_name="llama-3.3-70b-versatile",
+                    groq_api_base="https://api.groq.com/openai/v1",
+                    temperature=0
+                )
+                structured_llm = llm.with_structured_output(AegisFinancialReport)
 
                 formatted_prompt = prompt_template.format(
                     financial_context=context,
