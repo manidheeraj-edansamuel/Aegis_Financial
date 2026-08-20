@@ -71,7 +71,7 @@ if not groq_api_key:
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("System Information")
-st.sidebar.caption("🟢 **Inference:** Groq LLaMA 3.3 70B")
+st.sidebar.caption("🟢 **Inference:** Groq LLaMA 3.1 8B")
 st.sidebar.caption("🟢 **Database:** ChromaDB Vector Store")
 st.sidebar.caption("🟢 **Compliance:** Zero-Hallucination Grounded")
 
@@ -182,18 +182,18 @@ if st.button("Run Audit", type="primary", use_container_width=True):
         st.error("⚠️ Groq API Key missing! Please enter your key in the sidebar or set it in your environment variables.")
     else:
         try:
-            with st.spinner("Processing SEC disclosures via Groq LLaMA 3.3 70B..."):
+            with st.spinner("Processing SEC disclosures via Groq LLaMA 3.1 8B..."):
                 # Step 1: Retrieve Top-3 Context Chunks
                 docs = retriever.invoke(query)
                 context = "\n".join([doc.page_content for doc in docs])
 
-# Step 2: Structured Output Generation via Pydantic & Groq
-llm = ChatGroq(
-    groq_api_key=groq_api_key,
-    model_name="llama-3.1-8b-instant",  # Updated Model ID
-    temperature=0
-)
-structured_llm = llm.with_structured_output(AegisFinancialReport)
+                # Step 2: Structured Output Generation via Pydantic & Groq
+                llm = ChatGroq(
+                    groq_api_key=groq_api_key,
+                    model_name="llama-3.1-8b-instant",
+                    temperature=0
+                )
+                structured_llm = llm.with_structured_output(AegisFinancialReport)
 
                 formatted_prompt = prompt_template.format(
                     financial_context=context,
