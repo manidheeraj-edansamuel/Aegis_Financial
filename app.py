@@ -18,10 +18,16 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # ==========================================
 load_dotenv()
 
+# Prevent LangChain/OpenAI fallback hijacking
+if "OPENAI_API_KEY" in os.environ:
+    del os.environ["OPENAI_API_KEY"]
+if "OPENAI_BASE_URL" in os.environ:
+    del os.environ["OPENAI_BASE_URL"]
+
 # Check for API key in OS environment or Streamlit secrets
 groq_api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
 
-# Sync key back to OS environment so LangChain tools detect it globally
+# Sync key to OS environment
 if groq_api_key:
     os.environ["GROQ_API_KEY"] = groq_api_key
 
@@ -188,10 +194,11 @@ if st.button("Run Audit", type="primary", use_container_width=True):
                 # Step 2: Structured Output Generation via Pydantic & Groq
                 llm = ChatGroq(
     groq_api_key=groq_api_key,
-    model="llama-3.3-70b-versatile",
+    model_name="llama-3.3-70b-versatile",
+    groq_api_base="https://api.groq.com/openai/v1",
     temperature=0
 )
-                structured_llm = llm.with_structured_output(AegisFinancialReport)
+structured_llm = llm.with_structured_output(AegisFinancialReport)
 
                 formatted_prompt = prompt_template.format(
                     financial_context=context,
