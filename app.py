@@ -187,13 +187,13 @@ if st.button("Run Audit", type="primary", use_container_width=True):
                 docs = retriever.invoke(query)
                 context = "\n".join([doc.page_content for doc in docs])
 
-                # Step 2: Structured Output Generation via Pydantic & Groq
-                llm = ChatGroq(
-                    groq_api_key=groq_api_key,
-                    model_name="llama-3.3-70b-versatile",
-                    temperature=0
-                )
-                structured_llm = llm.with_structured_output(AegisFinancialReport)
+# Step 2: Structured Output Generation via Pydantic & Groq
+llm = ChatGroq(
+    groq_api_key=groq_api_key,
+    model_name="llama-3.1-8b-instant",  # Updated Model ID
+    temperature=0
+)
+structured_llm = llm.with_structured_output(AegisFinancialReport)
 
                 formatted_prompt = prompt_template.format(
                     financial_context=context,
