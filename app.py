@@ -18,15 +18,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # ==========================================
 load_dotenv()
 
-# Scrub potential OpenAI environment variables
-for key in ["OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_BASE"]:
-    os.environ.pop(key, None)
-
-# Fetch key from OS environment or Streamlit secrets
+# Get key from environment or Streamlit secrets
 groq_api_key = os.getenv("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
-
-if groq_api_key:
-    os.environ["GROQ_API_KEY"] = groq_api_key
 
 # ==========================================
 # 1. STREAMLIT PAGE CONFIGURATION & STYLING
@@ -187,13 +180,14 @@ if st.button("Run Audit", type="primary", use_container_width=True):
                 docs = retriever.invoke(query)
                 context = "\n".join([doc.page_content for doc in docs])
 
-                # Step 2: Structured Output Generation via Pydantic & Groq
-                llm = ChatGroq(
-                    groq_api_key=groq_api_key,
-                    model_name="llama-3.1-8b-instant",
-                    temperature=0
-                )
-                structured_llm = llm.with_structured_output(AegisFinancialReport)
+              # Step 2: Structured Output Generation via Groq's OpenAI-compatible Endpoint
+llm = ChatOpenAI(
+    model="llama-3.3-70b-versatile",
+    api_key=groq_api_key,
+    base_url="https://api.groq.com/openai/v1",
+    temperature=0
+)
+structured_llm = llm.with_structured_output(AegisFinancialReport)
 
                 formatted_prompt = prompt_template.format(
                     financial_context=context,
