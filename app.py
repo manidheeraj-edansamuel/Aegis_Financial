@@ -17,7 +17,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 # ============================================================
-# 0. ENVIRONMENT
+# 0. ENVIRONMENT / SECRET MANAGEMENT
 # ============================================================
 
 load_dotenv()
@@ -51,7 +51,17 @@ groq_api_key = get_groq_api_key()
 
 
 # ============================================================
-# 1. STREAMLIT CONFIGURATION
+# GROQ MODEL CONFIGURATION
+# ============================================================
+
+# Preferred model.
+# The application will verify which models are actually
+# available to the supplied Groq API key.
+PREFERRED_GROQ_MODEL = "llama-3.1-8b-instant"
+
+
+# ============================================================
+# 1. STREAMLIT PAGE CONFIGURATION
 # ============================================================
 
 st.set_page_config(
@@ -93,12 +103,12 @@ st.markdown(
 
 
 # ============================================================
-# 3. GET MODELS AVAILABLE TO THIS API KEY
+# 3. GROQ MODEL DISCOVERY
 # ============================================================
 
 def get_available_groq_models(api_key):
     """
-    Ask Groq which models are available to this API key.
+    Retrieve the models available to the current Groq API key.
     """
 
     try:
@@ -107,19 +117,22 @@ def get_available_groq_models(api_key):
             api_key=api_key
         )
 
-        models = client.models.list()
+        response = client.models.list()
 
-        model_ids = []
+        models = []
 
-        for model in models.data:
+        for model in response.data:
 
-            if getattr(model, "active", True):
+            model_id = getattr(
+                model,
+                "id",
+                None
+            )
 
-                model_ids.append(
-                    model.id
-                )
+            if model_id:
+                models.append(model_id)
 
-        return sorted(model_ids), None
+        return sorted(models), None
 
     except Exception as e:
 
@@ -127,19 +140,18 @@ def get_available_groq_models(api_key):
 
 
 # ============================================================
-# 4. SELECT A GOOD CHAT MODEL
+# 4. SELECT BEST MODEL
 # ============================================================
 
 def select_best_model(available_models):
     """
-    Select the best available model from the API key.
+    Select a suitable model.
 
-    Preference order:
-    1. llama-3.1-8b-instant
-    2. llama-3.3-70b-versatile
-    3. openai/gpt-oss-20b
-    4. openai/gpt-oss-120b
-    5. qwen models
+    Priority:
+    1. Llama 3.1 8B Instant
+    2. Llama 3.3 70B Versatile
+    3. OpenAI OSS models
+    4. Other available models
     """
 
     preferred_models = [
@@ -152,34 +164,38 @@ def select_best_model(available_models):
 
         "openai/gpt-oss-120b",
 
-        "qwen/qwen3.6-27b",
-
-        "qwen/qwen3.8-27b",
-
     ]
 
-    for preferred in preferred_models:
+    for model in preferred_models:
 
-        if preferred in available_models:
+        if model in available_models:
 
-            return preferred
+            return model
 
 
-    # Fallback
+    # Exclude models that are clearly not chat models
+    excluded_keywords = [
+        "whisper",
+        "tts",
+        "speech",
+        "guard",
+        "safety",
+        "audio",
+        "embedding"
+    ]
+
+
     chat_candidates = [
+
         model
         for model in available_models
         if not any(
             keyword in model.lower()
-            for keyword in [
-                "whisper",
-                "guard",
-                "safety",
-                "tts",
-                "speech"
-            ]
+            for keyword in excluded_keywords
         )
+
     ]
+
 
     if chat_candidates:
 
@@ -214,7 +230,7 @@ if not groq_api_key:
 
 
 # ============================================================
-# 6. MODEL DETECTION
+# 6. CHECK GROQ MODELS
 # ============================================================
 
 available_models = []
@@ -228,10 +244,11 @@ if groq_api_key:
         "Checking Groq model access..."
     ):
 
-        available_models, model_error = (
-            get_available_groq_models(
-                groq_api_key
-            )
+        (
+            available_models,
+            model_error
+        ) = get_available_groq_models(
+            groq_api_key
         )
 
 
@@ -241,17 +258,26 @@ if groq_api_key:
             available_models
         )
 
+
+        if default_model:
+
+            default_index = (
+                available_models.index(
+                    default_model
+                )
+            )
+
+        else:
+
+            default_index = 0
+
+
         selected_model = st.sidebar.selectbox(
             "Groq Model:",
             options=available_models,
-            index=(
-                available_models.index(default_model)
-                if default_model in available_models
-                else 0
-            ),
+            index=default_index,
             help=(
-                "These are the models visible to "
-                "your Groq API key."
+                "Models returned by your Groq API key."
             )
         )
 
@@ -293,33 +319,29 @@ st.sidebar.caption(
 )
 
 
-# ============================================================
-# 8. MODEL ACCESS INFORMATION
-# ============================================================
+if available_models:
 
-if groq_api_key:
+    st.sidebar.success(
+        f"{len(available_models)} Groq model(s) available"
+    )
 
-    if model_error:
 
-        st.sidebar.error(
-            "Unable to retrieve Groq models."
-        )
+    with st.sidebar.expander(
+        "View Available Models"
+    ):
 
-    elif available_models:
+        for model in available_models:
 
-        st.sidebar.success(
-            f"{len(available_models)} Groq models available"
-        )
+            st.write(
+                f"• `{model}`"
+            )
 
-        with st.sidebar.expander(
-            "View Available Models"
-        ):
 
-            for model in available_models:
+elif model_error:
 
-                st.write(
-                    f"• `{model}`"
-                )
+    st.sidebar.error(
+        "Could not retrieve Groq models."
+    )
 
 
 st.sidebar.markdown("---")
@@ -334,29 +356,34 @@ st.sidebar.caption(
 
 
 # ============================================================
-# 9. PYDANTIC OUTPUT SCHEMAS
+# 8. PYDANTIC OUTPUT SCHEMAS
 # ============================================================
 
 class FinancialMetric(BaseModel):
 
     metric_name: str = Field(
         description=(
-            "Name of financial metric such as "
-            "Revenue, Free Cash Flow, or Net Debt."
+            "Name of the financial metric. "
+            "Examples: Consolidated Revenue, "
+            "Operating Margin, Free Cash Flow, Net Debt."
         )
     )
 
     current_period: str = Field(
-        description="Current period financial value."
+        description=(
+            "Value for the current reporting period."
+        )
     )
 
     previous_period: str = Field(
-        description="Previous period financial value."
+        description=(
+            "Value for the previous/comparison period."
+        )
     )
 
     trend: str = Field(
         description=(
-            "Directional trend: UP, DOWN, or STABLE."
+            "Financial direction. Must be UP, DOWN, or STABLE."
         )
     )
 
@@ -364,49 +391,55 @@ class FinancialMetric(BaseModel):
 class AegisFinancialReport(BaseModel):
 
     company_name: str = Field(
-        description="Company or organization name."
+        description=(
+            "Company name extracted from the SEC context."
+        )
     )
 
     period: str = Field(
-        description="Reporting period."
+        description=(
+            "Reporting period, such as Q2 2026."
+        )
     )
 
     executive_summary: str = Field(
         description=(
-            "Concise financial performance and "
-            "risk summary."
+            "Concise summary of financial performance, "
+            "capital allocation, guidance and risks."
         )
     )
 
     key_metrics: List[FinancialMetric] = Field(
         description=(
-            "Important financial metrics extracted "
-            "from the SEC context."
+            "List of important financial metrics "
+            "extracted from the SEC context."
         )
     )
 
     key_risk_factors: List[str] = Field(
         description=(
-            "Important financial, regulatory, "
-            "guidance, or operational risks."
+            "Important financial, operational, regulatory, "
+            "supply chain or guidance risks."
         )
     )
 
     growth_drivers: List[str] = Field(
         description=(
-            "Primary business or revenue growth drivers."
+            "Business or revenue growth drivers "
+            "explicitly supported by the SEC context."
         )
     )
 
     overall_sentiment: str = Field(
         description=(
+            "Overall sentiment. Must be exactly "
             "BULLISH, BEARISH, or NEUTRAL."
         )
     )
 
 
 # ============================================================
-# 10. SAMPLE SEC FILINGS
+# 9. SAMPLE SEC FILINGS
 # ============================================================
 
 RAW_SEC_FILINGS = [
@@ -415,62 +448,54 @@ RAW_SEC_FILINGS = [
     TechCorp Inc. (NASDAQ: TCHP)
     Form 10-Q Disclosure (Q2 2026)
 
-    For the quarter ended June 30, 2026,
-    TechCorp consolidated revenue reached $1.2B.
+    ITEM 1. FINANCIAL STATEMENTS & MANAGEMENT DISCUSSION
 
-    This represents 15% YoY growth compared
-    to $1.04B in Q2 2025.
+    For the quarter ended June 30, 2026, TechCorp
+    consolidated revenue reached $1.2B, reflecting
+    a 15% YoY growth compared to $1.04B in Q2 2025.
 
-    Operating margin expanded from 22% in
-    the prior year period to 25%.
-
-    The improvement was attributed to cloud
-    software licensing momentum.
+    Operating margin expanded from 22% in the prior
+    year period to 25% due to cloud software
+    licensing momentum.
     """,
 
     """
     TechCorp Inc.
     Balance Sheet & Cash Flow Review (Q2 2026)
 
-    Free cash flow for the second quarter
-    contracted 8% YoY to $180M.
+    Free cash flow for the second quarter contracted
+    8% YoY to $180M, down from $195M in Q2 2025.
 
-    Free cash flow was $195M in Q2 2025.
+    The decline was driven by increased infrastructure
+    capital expenditures in AI data center deployment.
 
-    The decline was driven by increased
-    infrastructure capital expenditures
-    related to AI data center deployment.
+    Total outstanding debt stands at $600M offset by
+    $150M in cash equivalents.
 
-    Total outstanding debt is $600M.
-
-    Cash equivalents are $150M.
-
-    Net Debt is therefore $450M.
-
-    Net Debt was $400M in Q2 2025.
+    This results in a Net Debt position of $450M,
+    compared to $400M in Q2 2025.
     """,
 
     """
     TechCorp Inc.
     Guidance & Risk Factors Disclosure
 
-    Management revised full-year FY2026
-    revenue growth guidance downward
-    from 18% to 12%.
+    MANAGEMENT REVISION & REGULATORY WARNING:
 
-    The revision is attributed to European
-    supply chain bottlenecks in semiconductor
-    hardware delivery.
+    Management revised full-year FY2026 revenue growth
+    guidance downward from 18% to 12%.
 
-    The company also faces pending regulatory
-    approval delays involving cross-border
-    AI data transfers.
+    The revision is attributed to European supply chain
+    bottlenecks in semiconductor hardware delivery.
+
+    There are also pending regulatory approval delays
+    in cross-border AI data transfers.
     """
 ]
 
 
 # ============================================================
-# 11. TEXT CLEANING
+# 10. TEXT CLEANING
 # ============================================================
 
 def clean_and_normalize_sec_text(
@@ -493,7 +518,7 @@ def clean_and_normalize_sec_text(
 
 
 # ============================================================
-# 12. RAG ENGINE
+# 11. RAG ENGINE
 # ============================================================
 
 @st.cache_resource
@@ -501,23 +526,21 @@ def setup_rag_engine():
 
     cleaned_docs = [
         clean_and_normalize_sec_text(
-            doc
+            document
         )
-        for doc in RAW_SEC_FILINGS
+        for document in RAW_SEC_FILINGS
     ]
 
 
-    text_splitter = (
-        RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=200,
-            separators=[
-                "\n\n",
-                "\n",
-                " ",
-                ""
-            ]
-        )
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+        separators=[
+            "\n\n",
+            "\n",
+            " ",
+            ""
+        ]
     )
 
 
@@ -543,72 +566,239 @@ def setup_rag_engine():
     )
 
 
-    return vectorstore.as_retriever(
+    retriever = vectorstore.as_retriever(
         search_kwargs={
             "k": 3
         }
     )
 
 
+    return retriever
+
+
+# Initialize RAG
 retriever = setup_rag_engine()
 
 
 # ============================================================
-# 13. PROMPT
+# 12. AEGIS PROMPT
 # ============================================================
 
 AEGIS_PROMPT = """
 You are Aegis Financial's Lead Regulatory Compliance
 and Due Diligence Intelligence Engine.
 
-Analyze ONLY the SEC disclosures supplied below.
+Analyze ONLY the SEC context provided below.
 
 ============================================================
-SEC CONTEXT
+RETRIEVED SEC CONTEXT
 ============================================================
 
 {financial_context}
 
 ============================================================
-USER AUDIT QUERY
+AUDIT QUERY
 ============================================================
 
 {user_query}
 
 ============================================================
-STRICT RULES
+CRITICAL OUTPUT INSTRUCTIONS
 ============================================================
 
-1. Use ONLY the provided SEC context.
+You MUST fill the AegisFinancialReport schema.
 
-2. Never invent financial numbers.
+Do NOT create a custom JSON structure.
 
-3. Never invent dates.
+Do NOT return these as top-level fields:
 
-4. Never invent company information.
+- revenue
+- operating_margin
+- free_cash_flow
+- net_debt
+- guidance
+- risks
 
-5. Never use external knowledge.
+Instead, map the information into the required
+AegisFinancialReport fields:
 
-6. If information is unavailable, state:
-   "Not available in the provided SEC context."
+- company_name
+- period
+- executive_summary
+- key_metrics
+- key_risk_factors
+- growth_drivers
+- overall_sentiment
 
-7. Identify financial metrics.
+============================================================
+KEY METRICS
+============================================================
 
-8. Identify trends.
+Every key metric MUST contain:
 
-9. Identify risks.
+- metric_name
+- current_period
+- previous_period
+- trend
 
-10. Identify growth drivers.
+The trend MUST be:
 
-11. Identify management guidance changes.
+UP
+DOWN
+STABLE
 
-12. Overall sentiment MUST be one of:
+============================================================
+EXAMPLE
+============================================================
+
+If the SEC context states:
+
+Revenue reached $1.2B compared to $1.04B,
+representing 15% YoY growth.
+
+Then create:
+
+metric_name:
+"Consolidated Revenue"
+
+current_period:
+"$1.2B"
+
+previous_period:
+"$1.04B"
+
+trend:
+"UP"
+
+============================================================
+ANOTHER EXAMPLE
+============================================================
+
+If the SEC context states:
+
+Free cash flow declined from $195M to $180M.
+
+Then create:
+
+metric_name:
+"Free Cash Flow"
+
+current_period:
+"$180M"
+
+previous_period:
+"$195M"
+
+trend:
+"DOWN"
+
+============================================================
+NET DEBT
+============================================================
+
+If the SEC context states:
+
+Net Debt increased from $400M to $450M.
+
+Create:
+
+metric_name:
+"Net Debt"
+
+current_period:
+"$450M"
+
+previous_period:
+"$400M"
+
+trend:
+"UP"
+
+============================================================
+OPERATING MARGIN
+============================================================
+
+If the SEC context states:
+
+Operating margin increased from 22% to 25%.
+
+Create:
+
+metric_name:
+"Operating Margin"
+
+current_period:
+"25%"
+
+previous_period:
+"22%"
+
+trend:
+"UP"
+
+============================================================
+RISKS
+============================================================
+
+Put identified risks into:
+
+key_risk_factors
+
+Examples from this context include:
+
+- European semiconductor supply chain bottlenecks
+- Cross-border AI data transfer regulatory delays
+- Downward revision of FY2026 revenue guidance
+
+============================================================
+GROWTH DRIVERS
+============================================================
+
+Put positive business drivers into:
+
+growth_drivers
+
+For example:
+
+- Cloud software licensing momentum
+
+============================================================
+SENTIMENT
+============================================================
+
+overall_sentiment MUST be exactly one of:
 
 BULLISH
 BEARISH
 NEUTRAL
 
-Return JSON matching the requested schema.
+Base the sentiment only on the supplied context.
+
+============================================================
+GROUNDING RULES
+============================================================
+
+Use ONLY the supplied SEC context.
+
+Never invent financial numbers.
+
+Never invent dates.
+
+Never invent companies.
+
+Never invent financial metrics.
+
+Never use outside knowledge.
+
+If a requested fact is unavailable, write:
+
+"Not available in the provided SEC context."
+
+============================================================
+FINAL REQUIREMENT
+============================================================
+
+Return the AegisFinancialReport structure.
 """
 
 
@@ -618,7 +808,7 @@ prompt_template = ChatPromptTemplate.from_template(
 
 
 # ============================================================
-# 14. MAIN UI
+# 13. MAIN APPLICATION
 # ============================================================
 
 st.title(
@@ -631,6 +821,10 @@ st.caption(
 
 st.divider()
 
+
+# ============================================================
+# 14. USER QUERY
+# ============================================================
 
 query = st.text_input(
     "Enter Audit Query:",
@@ -652,9 +846,9 @@ if st.button(
     use_container_width=True
 ):
 
-    # --------------------------------------------------------
-    # API KEY CHECK
-    # --------------------------------------------------------
+    # ========================================================
+    # API KEY VALIDATION
+    # ========================================================
 
     if not groq_api_key:
 
@@ -669,14 +863,14 @@ if st.button(
         st.stop()
 
 
-    # --------------------------------------------------------
-    # MODEL CHECK
-    # --------------------------------------------------------
+    # ========================================================
+    # MODEL API CHECK
+    # ========================================================
 
     if model_error:
 
         st.error(
-            "❌ Could not retrieve models from Groq."
+            "❌ Unable to communicate with Groq."
         )
 
         st.code(
@@ -686,30 +880,39 @@ if st.button(
         st.stop()
 
 
+    # ========================================================
+    # AVAILABLE MODEL CHECK
+    # ========================================================
+
     if not available_models:
 
         st.error(
-            "❌ Your Groq API key returned no available models."
+            "❌ No Groq models were returned for "
+            "your API key."
         )
 
         st.info(
-            "Check your Groq API key and project configuration."
-        )
-
-        st.stop()
-
-
-    if not selected_model:
-
-        st.error(
-            "❌ No usable Groq chat model was detected."
+            "Please verify your Groq API key and project."
         )
 
         st.stop()
 
 
     # ========================================================
-    # AUDIT
+    # SELECTED MODEL CHECK
+    # ========================================================
+
+    if not selected_model:
+
+        st.error(
+            "❌ No usable chat model was detected."
+        )
+
+        st.stop()
+
+
+    # ========================================================
+    # AUDIT PROCESSING
     # ========================================================
 
     try:
@@ -719,7 +922,8 @@ if st.button(
         ):
 
             # ------------------------------------------------
-            # STEP 1: RETRIEVE DOCUMENTS
+            # STEP 1
+            # Retrieve relevant SEC chunks
             # ------------------------------------------------
 
             docs = retriever.invoke(
@@ -730,26 +934,28 @@ if st.button(
             if not docs:
 
                 st.error(
-                    "No relevant SEC context found."
+                    "No relevant SEC documents were found."
                 )
 
                 st.stop()
 
 
             # ------------------------------------------------
-            # STEP 2: BUILD CONTEXT
+            # STEP 2
+            # Build context
             # ------------------------------------------------
 
             context = "\n\n".join(
                 [
-                    doc.page_content
-                    for doc in docs
+                    document.page_content
+                    for document in docs
                 ]
             )
 
 
             # ------------------------------------------------
-            # STEP 3: CREATE GROQ LLM
+            # STEP 3
+            # Create Groq model
             # ------------------------------------------------
 
             llm = ChatGroq(
@@ -760,19 +966,26 @@ if st.button(
 
 
             # ------------------------------------------------
-            # STEP 4: STRUCTURED OUTPUT
+            # STEP 4
+            # STRUCTURED OUTPUT
+            #
+            # IMPORTANT:
+            # function_calling is used instead of json_mode.
+            # This allows LangChain to provide the Pydantic
+            # schema to the model.
             # ------------------------------------------------
 
             structured_llm = (
                 llm.with_structured_output(
                     AegisFinancialReport,
-                    method="json_mode"
+                    method="function_calling"
                 )
             )
 
 
             # ------------------------------------------------
-            # STEP 5: FORMAT PROMPT
+            # STEP 5
+            # Format prompt
             # ------------------------------------------------
 
             formatted_prompt = (
@@ -784,7 +997,8 @@ if st.button(
 
 
             # ------------------------------------------------
-            # STEP 6: CALL MODEL
+            # STEP 6
+            # Call Groq
             # ------------------------------------------------
 
             report: AegisFinancialReport = (
@@ -795,8 +1009,12 @@ if st.button(
 
 
         # ====================================================
-        # RESULTS
+        # SUCCESS
         # ====================================================
+
+        st.success(
+            "✅ Aegis audit completed successfully."
+        )
 
         st.divider()
 
@@ -808,6 +1026,10 @@ if st.button(
         col1, col2, col3 = st.columns(3)
 
 
+        # ----------------------------------------------------
+        # COMPANY
+        # ----------------------------------------------------
+
         with col1:
 
             st.metric(
@@ -817,10 +1039,16 @@ if st.button(
             )
 
 
+        # ----------------------------------------------------
+        # SENTIMENT
+        # ----------------------------------------------------
+
         with col2:
 
             sentiment = (
-                report.overall_sentiment.upper()
+                report.overall_sentiment
+                .upper()
+                .strip()
             )
 
             st.metric(
@@ -828,6 +1056,10 @@ if st.button(
                 sentiment
             )
 
+
+        # ----------------------------------------------------
+        # AUDIT STATUS
+        # ----------------------------------------------------
 
         with col3:
 
@@ -877,7 +1109,7 @@ if st.button(
             for metric in report.key_metrics:
 
                 trend = (
-                    metric.trend.upper()
+                    metric.trend.upper().strip()
                     if metric.trend
                     else "STABLE"
                 )
@@ -928,7 +1160,7 @@ if st.button(
 
 
         # ====================================================
-        # RISKS
+        # RISK FACTORS
         # ====================================================
 
         with col_right:
@@ -982,7 +1214,7 @@ if st.button(
 
 
         # ====================================================
-        # SENTIMENT
+        # SENTIMENT ANALYSIS
         # ====================================================
 
         st.divider()
@@ -995,27 +1227,28 @@ if st.button(
         if sentiment == "BULLISH":
 
             st.success(
-                "🟢 BULLISH — Positive financial momentum "
-                "is indicated by the available SEC context."
+                "🟢 BULLISH — The available SEC context "
+                "indicates positive financial momentum."
             )
 
         elif sentiment == "BEARISH":
 
             st.error(
-                "🔴 BEARISH — Significant financial or "
-                "regulatory risks are indicated."
+                "🔴 BEARISH — The available SEC context "
+                "indicates significant financial or "
+                "regulatory risks."
             )
 
         else:
 
             st.warning(
-                "🟡 NEUTRAL — The available evidence "
-                "contains mixed signals."
+                "🟡 NEUTRAL — The available SEC context "
+                "contains mixed financial signals."
             )
 
 
         # ====================================================
-        # RETRIEVED CONTEXT
+        # RETRIEVED SEC CONTEXT
         # ====================================================
 
         with st.expander(
@@ -1032,7 +1265,7 @@ if st.button(
         # ====================================================
 
         with st.expander(
-            "🧾 View Structured Report"
+            "🧾 View Structured Aegis Report"
         ):
 
             st.json(
@@ -1048,33 +1281,58 @@ if st.button(
 
         error_text = str(e)
 
-        if (
-            "model_not_found"
-            in error_text.lower()
-        ):
+        error_lower = (
+            error_text.lower()
+        )
+
+
+        # ----------------------------------------------------
+        # MODEL NOT FOUND
+        # ----------------------------------------------------
+
+        if "model_not_found" in error_lower:
 
             st.error(
-                "❌ The selected model was rejected by Groq."
+                "❌ Groq rejected the selected model."
             )
 
             st.warning(
-                f"Model attempted: `{selected_model}`"
+                f"Selected model: `{selected_model}`"
             )
 
             st.info(
-                "Try another model from the Groq Model "
-                "dropdown in the sidebar."
+                "Choose another model from the "
+                "Groq Model dropdown in the sidebar."
             )
 
 
-        elif "401" in error_text:
+        # ----------------------------------------------------
+        # API KEY
+        # ----------------------------------------------------
+
+        elif (
+            "401" in error_text
+            or "authentication" in error_lower
+            or "invalid api key" in error_lower
+        ):
 
             st.error(
-                "❌ Invalid or unauthorized Groq API key."
+                "❌ Groq API authentication failed."
+            )
+
+            st.info(
+                "Check your GROQ_API_KEY."
             )
 
 
-        elif "403" in error_text:
+        # ----------------------------------------------------
+        # PERMISSION
+        # ----------------------------------------------------
+
+        elif (
+            "403" in error_text
+            or "permission" in error_lower
+        ):
 
             st.error(
                 "❌ Your Groq project does not have "
@@ -1082,13 +1340,49 @@ if st.button(
             )
 
 
-        elif "429" in error_text:
+        # ----------------------------------------------------
+        # RATE LIMIT
+        # ----------------------------------------------------
+
+        elif (
+            "429" in error_text
+            or "rate limit" in error_lower
+        ):
 
             st.warning(
-                "⚠️ Groq rate limit reached. "
-                "Please wait and try again."
+                "⚠️ Groq rate limit reached."
             )
 
+            st.info(
+                "Wait a moment and try again."
+            )
+
+
+        # ----------------------------------------------------
+        # STRUCTURED OUTPUT ERROR
+        # ----------------------------------------------------
+
+        elif (
+            "outputparser" in error_lower
+            or "validation error" in error_lower
+            or "pydantic" in error_lower
+            or "failed to parse" in error_lower
+        ):
+
+            st.error(
+                "❌ The Groq response could not be "
+                "converted into the AegisFinancialReport schema."
+            )
+
+            st.info(
+                "The model responded, but its output did "
+                "not match the required structured format."
+            )
+
+
+        # ----------------------------------------------------
+        # GENERAL ERROR
+        # ----------------------------------------------------
 
         else:
 
@@ -1096,6 +1390,10 @@ if st.button(
                 f"❌ Audit Processing Error: {error_text}"
             )
 
+
+        # ----------------------------------------------------
+        # TECHNICAL DETAILS
+        # ----------------------------------------------------
 
         with st.expander(
             "🔧 Technical Error Details"
